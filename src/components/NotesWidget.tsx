@@ -16,6 +16,10 @@ export function NotesWidget({ userId }: NotesWidgetProps) {
   const [isSaving, setIsSaving] = useState(false);
 
   const fabRef = useRef<HTMLDivElement>(null);
+  // 偵測是否為觸控裝置
+  const isTouchDevice =
+  typeof window !== "undefined" &&
+  ("ontouchstart" in window || navigator.maxTouchPoints > 0);
 
   // 載入筆記
   useEffect(() => {
@@ -65,7 +69,8 @@ export function NotesWidget({ userId }: NotesWidgetProps) {
   return (
     <>
       {/* 🔶 右下角小橘點（可拖曳） */}
-      <Draggable nodeRef={fabRef}>
+      {/* 🔶 右下角小橘點（桌機可拖曳，手機可點開） */}
+      <Draggable nodeRef={fabRef} disabled={isTouchDevice}>
         <div
           ref={fabRef}
           style={{
@@ -73,10 +78,20 @@ export function NotesWidget({ userId }: NotesWidgetProps) {
             bottom: 24,
             right: 24,
             zIndex: 999999,
+            touchAction: "none", // ✅ 避免拖曳/觸控衝突
+            pointerEvents: "auto",
           }}
         >
           <button
+            type="button"
+            // ✅ 桌機 click
             onClick={() => setIsOpen((prev) => !prev)}
+            // ✅ 手機/觸控：用 touchend 保證會觸發
+            onTouchEnd={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsOpen((prev) => !prev);
+            }}
             className="w-16 h-16 rounded-full bg-amber-600 hover:bg-amber-700 shadow-2xl flex items-center justify-center border-4 border-white/30 backdrop-blur-md transition-all duration-300 hover:scale-110 cursor-pointer"
           >
             <StickyNote className="w-9 h-9 text-white drop-shadow-md" />
