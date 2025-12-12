@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { ArrowLeft, Coffee, Upload, X } from 'lucide-react';
 import { CoffeeBean } from '../App';
 
@@ -18,30 +18,33 @@ export function CoffeeBeanForm({ initialData, onSubmit, onCancel }: CoffeeBeanFo
       ? new Date(initialData.roastDate).toISOString().split('T')[0]
       : ''
   );
+
+  // ✅ 這裡是 base64 / data URL，暫時只存在本地（之後你在主畫面再決定要不要上傳）
   const [photo, setPhoto] = useState<string | undefined>(initialData?.photo);
 
-  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      // Check file size (max 5MB)
-      if (file.size > 5 * 1024 * 1024) {
-        alert('圖片檔案過大，請選擇小於 5MB 的圖片');
-        return;
-      }
+    if (!file) return;
 
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setPhoto(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+    // 檢查檔案大小（最大 5MB）
+    if (file.size > 5 * 1024 * 1024) {
+      alert('圖片檔案過大，請選擇小於 5MB 的圖片');
+      return;
     }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      // data URL（base64），可以存在 localStorage 或之後再轉 Blob 上傳
+      setPhoto(reader.result as string);
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleRemovePhoto = () => {
     setPhoto(undefined);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     onSubmit({
       name,
@@ -49,7 +52,7 @@ export function CoffeeBeanForm({ initialData, onSubmit, onCancel }: CoffeeBeanFo
       farm,
       process,
       roastDate,
-      photo,
+      photo, // ← 這裡暫時是 base64 字串
     });
   };
 
@@ -59,6 +62,7 @@ export function CoffeeBeanForm({ initialData, onSubmit, onCancel }: CoffeeBeanFo
         <button
           onClick={onCancel}
           className="p-2 hover:bg-amber-50 rounded-lg transition-colors"
+          type="button"
         >
           <ArrowLeft className="w-5 h-5 text-amber-700" />
         </button>
@@ -146,7 +150,7 @@ export function CoffeeBeanForm({ initialData, onSubmit, onCancel }: CoffeeBeanFo
           <label className="block text-sm text-amber-700 mb-2">
             咖啡豆照片
           </label>
-          
+
           {photo ? (
             <div className="relative inline-block">
               <img
@@ -169,7 +173,9 @@ export function CoffeeBeanForm({ initialData, onSubmit, onCancel }: CoffeeBeanFo
             >
               <Upload className="w-12 h-12 text-amber-400 mb-3" />
               <p className="text-amber-700 mb-1">點擊上傳咖啡豆照片</p>
-              <p className="text-sm text-amber-500">支援 JPG、PNG 格式，檔案大小限制 5MB</p>
+              <p className="text-sm text-amber-500">
+                支援 JPG、PNG 格式，檔案大小限制 5MB
+              </p>
               <input
                 type="file"
                 accept="image/*"

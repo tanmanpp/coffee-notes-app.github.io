@@ -60,6 +60,20 @@ export interface Note {
   createdAt: string;
 }
 
+const STORAGE_BUCKET = "bean_photos";
+
+function dataURLToBlob(dataURL: string): Blob {
+  const arr = dataURL.split(",");
+  const mimeMatch = arr[0].match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : "image/png";
+  const bstr = atob(arr[1]);
+  let n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  while (n--) {
+    u8arr[n] = bstr.charCodeAt(n);
+  }
+  return new Blob([u8arr], { type: mime });
+}
 
 export default function App() {
   // 1️⃣ 所有 state hooks 一次宣告好
@@ -72,7 +86,7 @@ export default function App() {
   const [editingBean, setEditingBean] = useState<CoffeeBean | null>(null);
   const [session, setSession] = useState<any>(null);
   const [editingBrewRecord, setEditingBrewRecord] = useState<BrewRecord | null>(null);
-
+  
 
   //目前登入使用者的 id
   const userId = session?.user?.id as string | undefined;
@@ -217,42 +231,135 @@ export default function App() {
     }
 
     try {
-      // 1. 上傳豆子：cofee_beans（有就更新，沒有就新增）
-      if (coffeeBeans.length > 0) {
-        const beansPayload = coffeeBeans.map((b) => ({
+      console.log("▶ 開始上傳到雲端…目前豆子數量：", coffeeBeans.length);
+      console.log("目前 coffeeBeans：", coffeeBeans);
+
+      const beansWithUrl: CoffeeBean[] = [];
+      const uploadErrors: string[] = [];
+
+      for (const bean of coffeeBeans) {
+        let newPhoto = bean.photo;
+
+        console.log(
+          "處理豆子：",
+          bean.name,
+          "photo 開頭：",
+          typeof bean.photo === "string" ? bean.photo.slice(0, 30) : bean.photo
+        );
+
+        // 只要有 photo，又不是 http 開頭，就當成「需要上傳」
+        if (bean.photo && typeof bean.photo === "string" && !bean.photo.startsWith("http")) {
+          if (!bean.photo.startsWith("data:")) {
+            console.warn("⚠ 這張圖不是 dataURL 格式，格式可能怪怪的，嘗試強行上傳看看。");
+          } else {
+            console.log("↪ 偵測到 dataURL，轉 Blob 準備上傳…");
+          }
+
+          try {
+            const blob = dataURLToBlob(bean.photo);
+
+            // 從 mime 猜副檔名
+            const mimeMatch = bean.photo.match(/^data:(.*?);/);
+            const mime = mimeMatch ? mimeMatch[1] : "image/png";
+            const ext = mime.split("/")[1] || "png";
+
+            // 檔案路徑：userId + beanId
+            const filePath = `coffee-beans/${userId}/${bean.id}-${Date.now()}.${ext}`;
+            console.log("上傳 Storage 路徑：", filePath, "bucket:", STORAGE_BUCKET);
+
+            const { error: uploadErr } = await supabase.storage
+              .from(STORAGE_BUCKET)
+              .upload(filePath, blob, {
+                cacheControl: "3600",
+                upsert: false,
+              });
+
+            if (uploadErr) {
+              console.error("❌ 上傳圖片失敗：", uploadErr);
+              uploadErrors.push(`${bean.name}：${uploadErr.message ?? "未知錯誤"}`);
+            } else {
+              const { data } = supabase.storage
+                .from(STORAGE_BUCKET)
+                .getPublicUrl(filePath);
+
+              console.log("✅ 取得 public URL：", data?.publicUrl);
+
+              if (data?.publicUrl) {
+                newPhoto = data.publicUrl; // 🔁 URL 取代 base64
+              } else {
+                uploadErrors.push(`${bean.name}：無法取得 public URL`);
+              }
+            }
+          } catch (e: any) {
+            console.error("❌ 轉換或上傳圖片時出錯：", e);
+            uploadErrors.push(`${bean.name}：${e?.message ?? "轉換/上傳錯誤"}`);
+          }
+        } else {
+          console.log("↪ 這顆豆子沒有照片，或已經是 URL，略過上傳。");
+        }
+
+        beansWithUrl.push({
+          ...bean,
+          photo: newPhoto,
+        });
+      }
+
+      // ✅ 更新前端 state（也會經由 useEffect 寫回 localStorage）
+      setCoffeeBeans(beansWithUrl);
+
+      // ☁ 上傳 coffee_beans 資料到 Supabase
+      if (beansWithUrl.length > 0) {
+        const beansPayload = beansWithUrl.map((b) => ({
           ...b,
-          user_id: userId, // ⚠ 確保 table 有 user_id 欄位
+          user_id: userId, // 確保有 user_id
         }));
 
+        console.log("☁ 上傳 coffee_beans payload：", beansPayload);
+
         const { error: insBeanErr } = await supabase
-          .from("coffee_beans") // ✅ 這裡用你現在的表名
+          .from("coffee_beans")
           .upsert(beansPayload, {
-            onConflict: "id", // 以 id 當 key 合併
+            onConflict: "id",
           });
 
-        if (insBeanErr) throw insBeanErr;
+        if (insBeanErr) {
+          console.error("❌ 上傳 coffee_beans 失敗：", insBeanErr);
+          throw insBeanErr;
+        }
       }
-  // 2. 上傳沖泡紀錄 flavor_records
+
+      // ☁ 上傳 flavor_records（維持你的原本邏輯）
       if (brewRecords.length > 0) {
         const recordsPayload = brewRecords.map((r) =>
           toDBFlavorRecordRow(r, userId)
         );
 
+        console.log("☁ 上傳 flavor_records payload：", recordsPayload);
+
         const { error: recError } = await supabase
-          .from("flavor_records")   // ⚠️ 表名如果不一樣，改這裡
+          .from("flavor_records")
           .upsert(recordsPayload, {
             onConflict: "id",
           });
 
-        if (recError) throw recError;
+        if (recError) {
+          console.error("❌ 上傳 flavor_records 失敗：", recError);
+          throw recError;
+        }
       }
 
-      alert("豆子與沖泡紀錄已合併上傳到雲端！");
+      if (uploadErrors.length > 0) {
+        alert("資料部分成功，但有圖片上傳失敗：\n" + uploadErrors.join("\n"));
+      } else {
+        alert("豆子與沖泡紀錄已合併上傳到雲端！");
+      }
     } catch (err: any) {
-      console.error("上傳雲端失敗", err);
+      console.error("🚨 上傳雲端整體失敗", err);
       alert("上傳雲端失敗：" + (err?.message ?? "未知錯誤"));
     }
   };
+
+
 
   // 從 Supabase 下載資料，覆蓋目前畫面 + localStorage
   const downloadFromCloud = async () => {
@@ -261,6 +368,10 @@ export default function App() {
       return;
     }
 
+    let mergedBeans: CoffeeBean[] = [];
+    let mergedRecords: BrewRecord[] = [];
+
+    // 🟦 第一段：只處理「跟 Supabase 要資料」
     try {
       // 1. 先抓 coffee_beans
       const { data: beansData, error: beansError } = await supabase
@@ -274,9 +385,8 @@ export default function App() {
       const remoteBeans = (beansData ?? []).map((row) =>
         fromDBCoffeeBeanRow(row as DBCoffeeBeanRow)
       );
-      const mergedBeans = mergeById(coffeeBeans, remoteBeans);
+      mergedBeans = mergeById(coffeeBeans, remoteBeans);
       setCoffeeBeans(mergedBeans);
-      localStorage.setItem("coffeeBeans", JSON.stringify(mergedBeans));
 
       // 2. 再抓 flavor_records
       const { data: recData, error: recError } = await supabase
@@ -290,16 +400,27 @@ export default function App() {
       const remoteRecords = (recData ?? []).map((row) =>
         fromDBFlavorRecordRow(row as DBFlavorRecordRow)
       );
-      const mergedRecords = mergeById(brewRecords, remoteRecords);
+      mergedRecords = mergeById(brewRecords, remoteRecords);
       setBrewRecords(mergedRecords);
-      localStorage.setItem("brewRecords", JSON.stringify(mergedRecords));
 
+    } catch (err: any) {
+      console.error("❌ 雲端請求失敗：", err);
+      alert("下載雲端資料失敗（Supabase）：" + (err?.message ?? "未知錯誤"));
+      return; // 直接結束，不要再寫 localStorage 了
+    }
+
+    // 🟩 第二段：再來才嘗試寫 localStorage，爆掉就只影響快取，不影響畫面
+    try {
+      localStorage.setItem("coffeeBeans", JSON.stringify(mergedBeans));
+      localStorage.setItem("brewRecords", JSON.stringify(mergedRecords));
       alert("已從雲端合併豆子與沖泡紀錄到本機");
     } catch (err: any) {
-      console.error("下載雲端資料失敗", err);
-      alert("下載雲端資料失敗：" + (err?.message ?? "未知錯誤"));
+      console.error("❌ 寫入 localStorage 失敗：", err);
+      alert(
+        "成功從雲端載入資料，但本機儲存空間不足，無法暫存到這支裝置。"
+      );
     }
-  };
+  };  
 
   // 前端 BrewRecord -> Supabase flavor_records row
   function toDBFlavorRecordRow(
@@ -420,7 +541,6 @@ export default function App() {
 
   return (
     <>
-
       <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50">
         {showComparison ? (
           <div className="max-w-6xl mx-auto p-6">
